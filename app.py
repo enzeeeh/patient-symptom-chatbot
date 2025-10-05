@@ -812,81 +812,19 @@ def main():
         
         # Medical Priority Guide
         st.markdown("### 🏥 Panduan Prioritas Medis")
-        with st.expander("ℹ️ Penjelasan Tingkat Prioritas Triase"):
-            st.markdown("""
-            **Sistem Triase Medis** digunakan untuk menentukan urgensi penanganan pasien:
-            
-            | Warna | Makna | Triase | Skala 1-5 | Kondisi Contoh |
-            |-------|--------|---------|-----------|----------------|
-            | 🔴 **Merah** | **Immediate/Kritis** | **Prioritas 0-I** | **5/5** | Mengancam nyawa segera (henti napas, syok, pendarahan masif). |
-            | � **Merah** | **Kritis** | **Prioritas I** | **4/5** | Mengancam nyawa tapi stabil beberapa menit (stroke akut, serangan jantung). |
-            | 🟡 **Kuning** | **Urgen** | **Prioritas II** | **3/5** | Serius tapi stabil, dapat ditunda beberapa jam (patah tulang besar, luka bakar sedang). |
-            | 🟢 **Hijau** | **Non-Urgen** | **Prioritas III** | **1-2/5** | Ringan, tidak mengancam nyawa (luka lecet, demam ringan). |
-            | ⚫ **Hitam** | **Meninggal** | **Prioritas 0** | **-** | Sudah meninggal atau tidak dapat diselamatkan. |
-            
-            **Penjelasan Skala:**
-            - **5/5**: Segera (dalam hitungan menit)
-            - **4/5**: Sangat mendesak (dalam 1 jam)
-            - **3/5**: Mendesak (dalam beberapa jam)
-            - **1-2/5**: Tidak mendesak (dapat menunggu)
-            
-            **Catatan:** 
-            - Tingkat urgensi ini hanya sebagai panduan awal
-            - Selalu konsultasikan dengan tenaga medis profesional
-            - Jika ragu, lebih baik segera mencari bantuan medis
-            """)
+        if st.button("ℹ️ Penjelasan Tingkat Prioritas Triase", use_container_width=True):
+            # Close any other modals first
+            st.session_state.show_tech_modal = False
+            st.session_state.show_triage_modal = True
+            st.rerun()
         
         # Technology Stack
         st.markdown("### 🔧 Technology Stack")
-        with st.expander("⚡ Technologies Used in This Chatbot"):
-            if HYBRID_AVAILABLE:
-                st.markdown("""
-                **🚀 Hybrid AI System:**
-                - **Core AI:** Google Gemini (gemini-1.5-flash-001 / gemini-pro-001)
-                - **RAG System:** LangChain for local medical guidelines processing
-                - **Embeddings:** Google Generative AI Embeddings + HuggingFace fallback
-                - **Vector Store:** FAISS for fast similarity search
-                - **Web Research:** Exa API for real-time medical research
-                - **Document Processing:** RecursiveCharacterTextSplitter
-                
-                **📚 Data Sources:**
-                - Local medical guidelines (COVID-19, Dengue, Typhoid, etc.)
-                - Real-time web research for latest medical information
-                - WHO and medical authority guidelines
-                
-                **🛠️ Framework & Infrastructure:**
-                - **Frontend:** Streamlit with custom CSS styling
-                - **Backend:** Python with async processing
-                - **Deployment:** Streamlit Cloud
-                - **Version Control:** Git & GitHub
-                """)
-            else:
-                st.markdown("""
-                **📖 Basic AI System:**
-                - **Core AI:** Google Gemini (gemini-1.5-flash-001 / gemini-pro-001)
-                - **Data Sources:** Built-in medical knowledge base
-                - **Framework:** Streamlit with custom CSS styling
-                - **Deployment:** Streamlit Cloud
-                - **Version Control:** Git & GitHub
-                
-                **💡 Upgrade to Hybrid Mode for:**
-                - Local medical guideline processing
-                - Real-time web research capabilities
-                - Enhanced accuracy with RAG system
-                """)
-            
-            st.markdown("""
-            **🎨 User Experience:**
-            - Progress bars with animated spinners
-            - Color-coded medical priority system
-            - Responsive design with medical theme
-            - Professional medical triage guidance
-            
-            **🔒 Security & Privacy:**
-            - API key encryption in Streamlit secrets
-            - No personal data storage
-            - Secure HTTPS communication
-            """)
+        if st.button("⚡ Technologies Used in This Chatbot", use_container_width=True):
+            # Close any other modals first
+            st.session_state.show_triage_modal = False
+            st.session_state.show_tech_modal = True
+            st.rerun()
         
         # Developer Information
         st.markdown("### 👨‍💻 Developer")
@@ -1243,5 +1181,129 @@ def get_relevant_guideline(conditions, symptoms):
         fallback = docs[0]['content'] if docs else "Please consult with a healthcare professional."
         return fallback[:1000] + "..." if len(fallback) > 1000 else fallback
 
+@st.dialog("🏥 Panduan Prioritas Medis - Sistem Triase", width="large")
+def show_triage_modal():
+    # Add custom CSS for wider modal
+    st.markdown("""
+    <style>
+    div[data-testid="modal"] > div {
+        width: 90% !important;
+        max-width: 1000px !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("""
+    **Sistem Triase Medis** digunakan untuk menentukan urgensi penanganan pasien:
+    
+    | Warna | Makna | Triase | Skala 1-5 | Kondisi Contoh |
+    |-------|--------|---------|-----------|----------------|
+    | 🔴 **Merah** | **Immediate/Kritis** | **Prioritas 0-I** | **5/5** | Mengancam nyawa segera (henti napas, syok, pendarahan masif). |
+    | 🔴 **Merah** | **Kritis** | **Prioritas I** | **4/5** | Mengancam nyawa tapi stabil beberapa menit (stroke akut, serangan jantung). |
+    | 🟡 **Kuning** | **Urgen** | **Prioritas II** | **3/5** | Serius tapi stabil, dapat ditunda beberapa jam (patah tulang besar, luka bakar sedang). |
+    | 🟢 **Hijau** | **Non-Urgen** | **Prioritas III** | **1-2/5** | Ringan, tidak mengancam nyawa (luka lecet, demam ringan). |
+    | ⚫ **Hitam** | **Meninggal** | **Prioritas 0** | **-** | Sudah meninggal atau tidak dapat diselamatkan. |
+    
+    **Penjelasan Skala:**
+    - **5/5**: Segera (dalam hitungan menit)
+    - **4/5**: Sangat mendesak (dalam 1 jam)
+    - **3/5**: Mendesak (dalam beberapa jam)
+    - **1-2/5**: Tidak mendesak (dapat menunggu)
+    
+    **Catatan:** 
+    - Tingkat urgensi ini hanya sebagai panduan awal
+    - Selalu konsultasikan dengan tenaga medis profesional
+    - Jika ragu, lebih baik segera mencari bantuan medis
+    
+    **Sumber:**
+    - Pedoman WHO untuk Sistem Triase
+    - Standar International Emergency Nursing
+    """)
+    
+    if st.button("Tutup", type="primary", use_container_width=True):
+        # Clear all modal flags
+        st.session_state.show_triage_modal = False
+        st.session_state.show_tech_modal = False
+        st.rerun()
+
+@st.dialog("🔧 Technology Stack - Patient Symptom Chatbot", width="large")
+def show_tech_modal():
+    # Add custom CSS for wider modal
+    st.markdown("""
+    <style>
+    div[data-testid="modal"] > div {
+        width: 90% !important;
+        max-width: 1000px !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    if HYBRID_AVAILABLE:
+        st.markdown("""
+        **🚀 Hybrid AI System:**
+        - **Core AI:** Google Gemini (gemini-1.5-flash-001 / gemini-pro-001)
+        - **RAG System:** LangChain for local medical guidelines processing
+        - **Embeddings:** Google Generative AI Embeddings + HuggingFace fallback
+        - **Vector Store:** FAISS for fast similarity search
+        - **Web Research:** Exa API for real-time medical research
+        - **Document Processing:** RecursiveCharacterTextSplitter
+        
+        **📚 Data Sources:**
+        - Local medical guidelines (COVID-19, Dengue, Typhoid, etc.)
+        - Real-time web research for latest medical information
+        - WHO and medical authority guidelines
+        
+        **🛠️ Framework & Infrastructure:**
+        - **Frontend:** Streamlit with custom CSS styling
+        - **Backend:** Python with async processing
+        - **Deployment:** Streamlit Cloud
+        - **Version Control:** Git & GitHub
+        """)
+    else:
+        st.markdown("""
+        **📖 Basic AI System:**
+        - **Core AI:** Google Gemini (gemini-1.5-flash-001 / gemini-pro-001)
+        - **Data Sources:** Built-in medical knowledge base
+        - **Framework:** Streamlit with custom CSS styling
+        - **Deployment:** Streamlit Cloud
+        - **Version Control:** Git & GitHub
+        
+        **💡 Upgrade to Hybrid Mode for:**
+        - Local medical guideline processing
+        - Real-time web research capabilities
+        - Enhanced accuracy with RAG system
+        """)
+    
+    st.markdown("""
+    **🎨 User Experience:**
+    - Progress bars with animated spinners
+    - Color-coded medical priority system
+    - Responsive design with medical theme
+    - Professional medical triage guidance
+    
+    **🔒 Security & Privacy:**
+    - API key encryption in Streamlit secrets
+    - No personal data storage
+    - Secure HTTPS communication
+    
+    **⚡ Performance:**
+    - Optimized AI model selection with fallbacks
+    - Efficient vector search for medical guidelines
+    - Real-time web research integration
+    - Smart caching for improved response times
+    """)
+    
+    if st.button("Tutup", type="primary", use_container_width=True):
+        # Clear all modal flags
+        st.session_state.show_triage_modal = False
+        st.session_state.show_tech_modal = False
+        st.rerun()
+
 if __name__ == "__main__":
+    # Show modals if requested - only one at a time
+    if st.session_state.get('show_triage_modal', False):
+        show_triage_modal()
+    elif st.session_state.get('show_tech_modal', False):
+        show_tech_modal()
+    
     main()
