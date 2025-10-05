@@ -7,6 +7,14 @@ from typing import List, Dict
 import glob
 import datetime
 
+# Configure Streamlit page to use wide layout
+st.set_page_config(
+    page_title="Patient Symptom Chatbot",
+    page_icon="🩺",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
 # If using Gemini API via Google Generative AI SDK
 def call_gemini_api(messages: List[Dict[str, str]], api_key: str) -> Dict:
     import google.generativeai as genai
@@ -650,8 +658,22 @@ Rekomendasi:
         with st.chat_message("user"):
             st.markdown(user_input)
         
-        # Add current symptoms to collection
-        st.session_state.collected_symptoms.append(user_input)
+        # Combine chat input with any selected symptoms from multiselect
+        combined_symptoms = []
+        
+        # Add previously selected symptoms from multiselect
+        if st.session_state.get("selected_additional_symptoms", []):
+            selected_symptoms_text = f"Saya juga mengalami: {', '.join(st.session_state.selected_additional_symptoms)}"
+            combined_symptoms.append(selected_symptoms_text)
+            # Clear the selected symptoms since we're adding them
+            st.session_state.selected_additional_symptoms = []
+        
+        # Add the new chat input
+        combined_symptoms.append(user_input)
+        
+        # Add combined symptoms to collection
+        for symptom in combined_symptoms:
+            st.session_state.collected_symptoms.append(symptom)
         
         # Quick symptom extraction (without full analysis)
         with st.spinner("Mengekstrak gejala..."):
