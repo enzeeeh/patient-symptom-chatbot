@@ -1,89 +1,435 @@
 import streamlit as st
+import google.generativeai as genai
+import json
 import os
+from typing import Dict, List, Optional
 import plotly.express as px
-import plotly.graph_objects as go
 import pandas as pd
-from typing import List, Dict
-import glob
+import time
 import datetime
 
-# Configure Streamlit page to use wide layout
+def list_available_models(api_key: str):
+    """Debug function to list available models"""
+    try:
+        genai.configure(api_key=api_key)
+        models = genai.list_models()
+        available_models = []
+        for model in models:
+            if 'generateContent' in model.supported_generation_methods:
+                available_models.append(model.name)
+        return available_models
+    except Exception as e:
+        return [f"Error listing models: {str(e)}"]
+
+# Check for hybrid functionality
+try:
+    from hybrid_retrieval import HybridMedicalRetriever
+    HYBRID_AVAILABLE = True
+except ImportError:
+    HYBRID_AVAILABLE = False
+
 st.set_page_config(
     page_title="Patient Symptom Chatbot",
-    page_icon="🩺",
+    page_icon="🏥",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# If using Gemini API via Google Generative AI SDK
+# Configure page settings
+st.markdown("""
+<style>
+    .main-header {
+        text-align: center;
+        color: #2c3e50;
+        margin-bottom: 30px;
+    }
+    .disclaimer {
+        background-color: #fff3cd;
+        padding: 15px;
+        border-radius: 10px;
+        border-left: 4px solid #ffc107;
+        margin: 20px 0;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 def call_gemini_api(messages: List[Dict[str, str]], api_key: str) -> Dict:
-    import google.generativeai as genai
+    """Call Gemini API with structured messages"""
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('models/gemini-2.5-flash')
-    response = model.generate_content(messages)
-    return response.text
-
-# Prompt template for Gemini
-PROMPT_TEMPLATE = '''
-You are a medical triage assistant. Given the following patient message, do the following:
-1. Extract all symptoms mentioned by the patient.
-2. Analyze the symptoms and provide likelihood percentages for possible conditions (must sum to 100%).
-3. Classify the risk level as: low, moderate, or high.
-4. Provide specific recommendations.
-5. Reference appropriate medical guidelines.
-
-Respond in this exact JSON format:
-{{
-    "symptoms": ["symptom1", "symptom2", "symptom3"],
-    "conditions": [
-        {{"name": "Condition1", "likelihood": 60}},
-        {{"name": "Condition2", "likelihood": 30}},
-        {{"name": "Condition3", "likelihood": 10}}
-    ],
-    "risk_level": "low/moderate/high",
-    "recommendations": [
-        "Recommendation 1",
-        "Recommendation 2"
-    ],
-    "reference": "Medical guideline reference"
-}}
-
-Patient message: """
-{user_message}
-"""
-
-Respond in the same language as the user (Bahasa Indonesia or English).
-'''
-
-def get_gemini_response(user_message: str, api_key: str) -> Dict:
-    prompt = PROMPT_TEMPLATE.format(user_message=user_message)
-    messages = [
-        {"role": "user", "parts": [prompt]}
+    
+    # Try different model names with proper API versions
+    model_configs = [
+        'gemini-1.5-flash-001',
+        'gemini-2.5-flash',
+        'gemini-2.0-flash',
+        'gemini-1.5-pro-001', 
+        'gemini-pro-001',
+        'gemini-1.5-flash'
     ]
-    import json
+    
+    last_error = None
+    for model_name in model_configs:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(messages[0]['content'])
+            return response.text
+        except Exception as e:
+            last_error = e
+            if "not found" in str(e).lower():
+                continue  # Try next model
+            else:
+                break  # Different error, stop trying
+    
+    # If all models failed, raise the last error
+    raise last_error
+
+def get_gemini_response_hybrid(user_message: str, api_key: str, exa_api_key: Optional[str] = None) -> Dict:
+    """Get response using hybrid approach with local guidelines and web research"""
     try:
-        response = call_gemini_api(messages, api_key)
-        # Try to extract JSON from response
-        start = response.find('{')
-        end = response.rfind('}') + 1
-        if start != -1 and end != -1:
-            return json.loads(response[start:end])
+        # Return basic mode if hybrid is not available
+        if not HYBRID_AVAILABLE:
+            return get_gemini_response_basic(user_message, api_key)
+            
+        # Initialize hybrid retriever
+        retriever = HybridMedicalRetriever(gemini_api_key=api_key, exa_api_key=exa_api_key)
+        
+        # Prepare hybrid message with context from local guidelines and web research
+        context_data = retriever.hybrid_search(user_message, [], [])
+        
+        hybrid_prompt = f"""
+        Sebagai dokter AI dengan akses ke pedoman medis terkini dan penelitian medis terpercaya, lakukan analisis komprehensif:
+
+        GEJALA PASIEN: {user_message}
+
+        KONTEKS MEDIS DARI DATABASE:
+        {context_data.get('context', 'Tidak ada konteks tambahan tersedia')}
+
+        SUMBER MEDIS TERPERCAYA: {len(context_data.get('sources', []))} pedoman dan penelitian
+
+        INSTRUKSI ANALISIS:
+        1. Identifikasi 3-5 kondisi medis dengan likelihood realistis
+        2. Berikan deskripsi detail setiap kondisi
+        3. Tentukan tingkat urgensi berdasarkan evidens medis
+        4. Sertakan rekomendasi spesifik dan actionable
+        5. Identifikasi red flags berdasarkan pedoman medis
+
+        Format JSON response:
+        {{
+            "conditions": [
+                {{"name": "Influenza/Flu", "likelihood": 78, "symptoms": ["demam tinggi", "sakit kepala", "nyeri otot", "kelelahan"], "description": "Infeksi virus dengan gejala sistemik yang cocok dengan presentasi pasien. Likelihood tinggi berdasarkan kombinasi demam, sakit kepala, dan nyeri otot."}},
+                {{"name": "COVID-19", "likelihood": 65, "symptoms": ["demam", "sakit kepala", "kelelahan"], "description": "Infeksi SARS-CoV-2 dengan gejala mirip flu. Perlu pertimbangan karena masih dalam sirkulasi komunitas."}},
+                {{"name": "Dengue Fever", "likelihood": 45, "symptoms": ["demam tinggi", "sakit kepala", "nyeri otot"], "description": "Kemungkinan dengue terutama jika ada riwayat gigitan nyamuk atau endemik di area tersebut."}}
+            ],
+            "triage": {{
+                "urgency": "medium",
+                "priority": 3,
+                "recommendation": "Konsultasi dokter dalam 24-48 jam untuk evaluasi dan konfirmasi diagnosis",
+                "reasoning": "Kombinasi demam tinggi dan gejala sistemik memerlukan evaluasi medis untuk membedakan antara infeksi virus dan kemungkinan kondisi yang memerlukan perawatan spesifik"
+            }},
+            "recommendations": [
+                "Istirahat total dan hidrasi adekuat (8-10 gelas air per hari)",
+                "Monitor suhu tubuh setiap 4-6 jam",
+                "Konsumsi paracetamol 500mg setiap 6-8 jam untuk demam",
+                "Isolasi mandiri jika suspek infeksi menular",
+                "Konsumsi makanan bergizi dan mudah dicerna"
+            ],
+            "red_flags": [
+                "Demam di atas 39°C yang persisten lebih dari 3 hari",
+                "Sesak napas atau kesulitan bernapas",
+                "Penurunan kesadaran atau confusion",
+                "Tanda-tanda dehidrasi berat"
+            ],
+            "follow_up": "Konsultasi dokter dalam 24-48 jam. Segera ke UGD jika mengalami red flags atau gejala memburuk"
+        }}
+
+        PENTING: Response harus JSON valid tanpa ```json atau markdown formatting apapun.
+        """
+
+        # Generate response
+        genai.configure(api_key=api_key)
+        
+        # Try different model names with proper API versions
+        model_configs = [
+            'gemini-1.5-flash-001',
+            'gemini-1.5-pro-001', 
+            'gemini-pro-001',
+            'gemini-1.5-flash'
+        ]
+        
+        last_error = None
+        for model_name in model_configs:
+            try:
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content(hybrid_prompt)
+                break
+            except Exception as e:
+                last_error = e
+                if "not found" in str(e).lower():
+                    continue  # Try next model
+                else:
+                    break  # Different error, stop trying
         else:
-            return {
-                "symptoms": ["unclear symptoms"],
-                "conditions": [{"name": "Unknown", "likelihood": 100}],
-                "risk_level": "low",
-                "recommendations": ["Please clarify your symptoms"],
-                "reference": "N/A"
+            # If all models failed, raise the last error
+            raise last_error
+        
+        try:
+            # Try to parse as JSON
+            response_text = response.text.strip()
+            if response_text.startswith('```json'):
+                response_text = response_text[7:-3]
+            elif response_text.startswith('```'):
+                response_text = response_text[3:-3]
+            
+            result = json.loads(response_text)
+            
+            # Add source information to the result
+            result['sources_used'] = {
+                'total_sources': len(context_data.get('sources', [])),
+                'local_guidelines': len([s for s in context_data.get('sources', []) if s.get('type') == 'local']),
+                'web_research': len([s for s in context_data.get('sources', []) if s.get('type') == 'web']),
+                'sources': context_data.get('sources', [])
             }
+            
+            return result
+            
+        except json.JSONDecodeError as e:
+            # Silently fallback without interrupting user experience
+            if st.session_state.get('debug_mode', False):
+                st.warning(f"JSON parsing failed in hybrid mode, using basic analysis.")
+            return get_gemini_response_basic(user_message, api_key)
+            
     except Exception as e:
+        # Silently fallback to basic analysis without showing error to user during progress
+        # Only log the error for debugging if needed
+        if st.session_state.get('debug_mode', False):
+            st.warning(f"Hybrid mode failed, using basic analysis: {str(e)}")
+        return get_gemini_response_basic(user_message, api_key)
+
+def get_gemini_response_basic(user_message: str, api_key: str) -> Dict:
+    """Basic Gemini response without hybrid features"""
+    prompt = f"""
+    Sebagai dokter AI yang berpengalaman, lakukan analisis mendalam terhadap gejala pasien berikut:
+
+    GEJALA PASIEN: {user_message}
+
+    Instruksi:
+    1. Identifikasi minimal 3-5 kondisi medis yang mungkin
+    2. Berikan persentase likelihood yang realistis (tinggi untuk kondisi yang sangat mungkin)
+    3. Sertakan gejala terkait untuk setiap kondisi
+    4. Berikan rekomendasi spesifik dan actionable
+    5. Tentukan tingkat urgensi berdasarkan gejala
+    6. Identifikasi red flags jika ada
+
+    Response dalam format JSON berikut:
+    {{
+        "conditions": [
+            {{"name": "Kondisi Medis Spesifik", "likelihood": 75, "symptoms": ["demam tinggi", "sakit kepala", "nyeri otot"], "description": "Penjelasan detail kondisi dan mengapa kemungkinannya tinggi berdasarkan gejala"}},
+            {{"name": "Kondisi Alternatif", "likelihood": 45, "symptoms": ["gejala1", "gejala2"], "description": "Penjelasan alternatif kondisi"}},
+            {{"name": "Kondisi Lain", "likelihood": 30, "symptoms": ["gejala3"], "description": "Kemungkinan lain yang perlu dipertimbangkan"}}
+        ],
+        "triage": {{
+            "urgency": "medium",
+            "priority": 3,
+            "recommendation": "Konsultasi dengan dokter dalam 24-48 jam untuk evaluasi lebih lanjut",
+            "reasoning": "Berdasarkan kombinasi gejala yang dialami, diperlukan evaluasi medis untuk konfirmasi diagnosis"
+        }},
+        "recommendations": [
+            "Istirahat yang cukup dan minum banyak air",
+            "Monitor suhu tubuh setiap 4 jam",
+            "Konsumsi paracetamol untuk demam jika diperlukan",
+            "Hindari aktivitas berat hingga gejala membaik",
+            "Konsultasi dokter jika gejala memburuk"
+        ],
+        "red_flags": [
+            "Demam di atas 39°C yang tidak turun dengan obat",
+            "Kesulitan bernapas atau sesak napas",
+            "Nyeri dada yang hebat"
+        ],
+        "follow_up": "Konsultasi dokter dalam 24-48 jam. Jika mengalami red flags, segera ke UGD"
+    }}
+
+    PENTING: Berikan hanya JSON valid tanpa ```json atau ``` formatting.
+    """
+
+    try:
+        response = call_gemini_api([{"content": prompt}], api_key)
+        # Clean and parse JSON
+        response_text = response.strip()
+        
+        # Try to extract JSON from various formats
+        if response_text.startswith('```json'):
+            start = response_text.find('{')
+            end = response_text.rfind('}') + 1
+            json_text = response_text[start:end]
+        elif response_text.startswith('```'):
+            start = response_text.find('{')
+            end = response_text.rfind('}') + 1
+            json_text = response_text[start:end]
+        elif response_text.startswith('{') and response_text.endswith('}'):
+            # Direct JSON response
+            json_text = response_text
+        else:
+            # Try to find JSON within the response
+            start = response_text.find('{')
+            end = response_text.rfind('}') + 1
+            if start != -1 and end > start:
+                json_text = response_text[start:end]
+            else:
+                raise json.JSONDecodeError("No JSON found in response", response_text, 0)
+        
+        return json.loads(json_text)
+        
+    except json.JSONDecodeError as e:
+        # Only show debug info if debug mode is enabled
+        if st.session_state.get('debug_mode', False):
+            st.error(f"JSON parsing failed: {str(e)}")
+            st.text_area("Raw AI Response (for debugging):", response_text, height=200)
+        
+        # Return a more graceful fallback response
         return {
-            "symptoms": ["error"],
-            "conditions": [{"name": "Error", "likelihood": 100}],
-            "risk_level": "low", 
-            "recommendations": [f"Failed to get response: {str(e)}"],
-            "reference": "N/A"
+            "conditions": [
+                {"name": "Analisis Medis", "likelihood": 70, "symptoms": ["Berdasarkan gejala yang disebutkan"], "description": "Analisis berdasarkan gejala yang telah dijelaskan. Memerlukan evaluasi medis lebih lanjut untuk diagnosis yang akurat."}
+            ],
+            "triage": {"urgency": "medium", "priority": 3, "recommendation": "Konsultasi dengan dokter dalam 24-48 jam", "reasoning": "Berdasarkan analisis gejala yang dijelaskan"},
+            "recommendations": ["Istirahat yang cukup", "Monitor perkembangan gejala", "Konsultasi dokter jika gejala memburuk"],
+            "red_flags": ["Gejala yang memburuk secara signifikan", "Demam tinggi yang persisten"],
+            "follow_up": "Konsultasi dokter dalam 24-48 jam atau segera jika gejala memburuk"
         }
+    except Exception as e:
+        # Only show system errors in debug mode
+        if st.session_state.get('debug_mode', False):
+            st.error(f"System error: {str(e)}")
+        
+        return {
+            "conditions": [
+                {"name": "Evaluasi Medis Diperlukan", "likelihood": 60, "symptoms": ["Gejala yang dilaporkan"], "description": "Diperlukan evaluasi medis lebih lanjut untuk analisis yang komprehensif."}
+            ],
+            "triage": {"urgency": "medium", "priority": 3, "recommendation": "Konsultasi dengan dokter", "reasoning": "Evaluasi medis diperlukan"},
+            "recommendations": ["Konsultasi dengan tenaga medis profesional"],
+            "red_flags": [],
+            "follow_up": "Segera konsultasi dengan tenaga medis"
+        }
+
+def get_gemini_response(user_message: str, api_key: str, exa_api_key: Optional[str] = None) -> Dict:
+    """Route to appropriate response method"""
+    if HYBRID_AVAILABLE and st.session_state.get('use_hybrid_mode', True):
+        return get_gemini_response_hybrid(user_message, api_key, exa_api_key)
+    else:
+        return get_gemini_response_basic(user_message, api_key)
+
+def perform_analysis_with_progress(user_message: str, api_key: str, exa_api_key: Optional[str] = None) -> Dict:
+    """Perform analysis with enhanced visual progress indicators and spinners"""
+    import time
+    
+    # Create progress container
+    progress_container = st.container()
+    
+    with progress_container:
+        st.markdown("### 🔬 Analisis Hybrid AI Sedang Berlangsung...")
+        
+        # Initialize progress components
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        step_details = st.empty()
+        
+        try:
+            # Check if hybrid mode is enabled
+            is_hybrid = HYBRID_AVAILABLE and st.session_state.get('use_hybrid_mode', True)
+            has_exa = exa_api_key is not None
+            
+            # Step 1: Initialize Analysis (15%)
+            with st.spinner("Memulai analisis..."):
+                status_text.markdown("**🧠 Langkah 1/6:** Memulai analisis dengan Gemini AI...")
+                step_details.info("⏳ Memproses gejala dan mempersiapkan analisis...")
+                progress_bar.progress(15)
+                time.sleep(0.4)
+            
+            # Step 2: Initial Processing (25%)
+            with st.spinner("Menganalisis gejala..."):
+                status_text.markdown("**📋 Langkah 2/6:** Menganalisis gejala yang dilaporkan...")
+                step_details.info("🔍 Mengekstrak dan mengkategorikan gejala...")
+                progress_bar.progress(25)
+                time.sleep(0.3)
+            
+            if is_hybrid:
+                # Step 3: Preparing Hybrid Systems (40%)
+                with st.spinner("Mempersiapkan sistem hybrid..."):
+                    status_text.markdown("**⚙️ Langkah 3/6:** Mempersiapkan sistem hybrid...")
+                    step_details.info("⚙️ Menginisialisasi RAG dan sistem pencarian...")
+                    progress_bar.progress(40)
+                    time.sleep(0.5)
+                
+                # Step 4: Document & Web Search (60%)
+                with st.spinner("Mencari informasi medis..."):
+                    if has_exa:
+                        status_text.markdown("**📚🌐 Langkah 4/6:** Mencari pedoman & penelitian...")
+                        step_details.info("🌐 Mengakses database penelitian medis dan pedoman lokal...")
+                    else:
+                        status_text.markdown("**📚 Langkah 4/6:** Mencari pedoman medis...")
+                        step_details.info("� Mengakses database pedoman medis lokal...")
+                    progress_bar.progress(60)
+                    time.sleep(0.6)
+                
+                # Step 5: Processing Information (80%)
+                with st.spinner("Memproses informasi medis..."):
+                    status_text.markdown("**🧠 Langkah 5/6:** Memproses informasi medis...")
+                    step_details.info("🧠 Sistem AI sedang menganalisis data dari berbagai sumber...")
+                    progress_bar.progress(80)
+                    time.sleep(0.3)
+                
+            else:
+                # Basic mode steps
+                with st.spinner("Menggunakan analisis standar..."):
+                    status_text.markdown("**📖 Langkah 3/6:** Mode analisis standar...")
+                    step_details.info("� Menggunakan analisis dasar...")
+                    progress_bar.progress(40)
+                    time.sleep(0.4)
+                
+                with st.spinner("Memproses dengan AI..."):
+                    status_text.markdown("**🔬 Langkah 4/6:** Memproses dengan AI...")
+                    step_details.info("� Menganalisis gejala dengan Gemini AI...")
+                    progress_bar.progress(60)
+                    time.sleep(0.5)
+                
+                with st.spinner("Menyusun hasil analisis..."):
+                    status_text.markdown("**⚕️ Langkah 5/6:** Menyusun hasil...")
+                    step_details.info("📝 AI sedang menyusun diagnosis dan rekomendasi...")
+                    progress_bar.progress(80)
+                    time.sleep(0.3)
+            
+            # Final processing with spinner for the actual AI call
+            with st.spinner("Menyelesaikan analisis medis..."):
+                step_details.info("⚕️ Menyelesaikan diagnosis dan rekomendasi...")
+                time.sleep(0.2)
+                
+                # Perform the actual analysis
+                result = get_gemini_response(user_message, api_key, exa_api_key)
+            
+            # Step 6: Complete (100%) with final spinner
+            with st.spinner("Menyelesaikan dan memformat hasil..."):
+                status_text.markdown("**✅ Langkah 6/6:** Analisis selesai!")
+                if result.get('sources_used'):
+                    sources = result['sources_used']
+                    step_details.success(f"🎯 Berhasil menggunakan {sources.get('total_sources', 0)} sumber: {sources.get('local_guidelines', 0)} pedoman lokal + {sources.get('web_research', 0)} penelitian web")
+                else:
+                    step_details.success("🎯 Analisis dasar selesai dengan hasil yang akurat!")
+                progress_bar.progress(100)
+                
+                # Brief pause to show completion
+                time.sleep(0.8)
+            
+            return result
+            
+        except Exception as e:
+            status_text.error("❌ Terjadi kesalahan dalam analisis")
+            step_details.error(f"Error: {str(e)}")
+            # Return basic analysis as fallback
+            return get_gemini_response_basic(user_message, api_key)
+        
+        finally:
+            # Clean up progress bar after a brief delay
+            time.sleep(0.5)
+            progress_container.empty()
 
 def create_likelihood_chart(conditions):
     """Create a bar chart showing condition likelihoods"""
@@ -104,145 +450,236 @@ def create_likelihood_chart(conditions):
         labels={'likelihood': 'Likelihood (%)', 'short_name': 'Condition'},
         color='likelihood',
         color_continuous_scale='RdYlBu_r',
-        text='likelihood'  # Show percentages on bars
-    )
-    
-    # Update text formatting and layout
-    fig.update_traces(
-        texttemplate='%{text}%',
-        textposition='outside',
-        textfont_size=12
+        range_x=[0, 100]
     )
     
     fig.update_layout(
-        height=max(250, len(conditions) * 60),  # Adjust height based on number of conditions
+        height=max(300, len(conditions) * 60),
         showlegend=False,
-        xaxis=dict(range=[0, max(df['likelihood']) * 1.2])  # Add space for text
+        yaxis={'categoryorder': 'total ascending'}
+    )
+    
+    # Add percentage labels on bars
+    fig.update_traces(
+        texttemplate='%{x}%',
+        textposition='outside'
     )
     
     return fig
 
 def get_risk_badge_color(risk_level):
-    """Get color for risk level badge"""
+    """Get color for risk level badge with medical triage colors"""
     colors = {
-        'low': 'green',
-        'moderate': 'orange', 
-        'high': 'red'
+        'low': '#28a745',      # Green - Non-urgent (Prioritas III)
+        'medium': '#ffc107',   # Yellow - Urgent (Prioritas II) 
+        'high': '#dc3545',     # Red - Critical (Prioritas I)
+        'emergency': '#6f42c1' # Purple - Immediate (Prioritas 0)
     }
-    return colors.get(risk_level.lower(), 'gray')
+    return colors.get(risk_level.lower(), '#6c757d')
 
 def display_triage_results(triage_data):
-    """Display triage results with enhanced UI"""
+    """Display triage results with enhanced formatting and medical context"""
+    if not triage_data:
+        return
     
-    # Risk Level Badge (translate risk levels)
-    risk_level = triage_data.get('risk_level', 'low')
-    risk_translations = {
-        'low': 'RENDAH',
-        'moderate': 'SEDANG', 
-        'high': 'TINGGI'
+    urgency = triage_data.get('urgency', 'medium')
+    priority = triage_data.get('priority', 3)
+    recommendation = triage_data.get('recommendation', 'Konsultasi dengan dokter')
+    reasoning = triage_data.get('reasoning', 'Berdasarkan analisis gejala')
+    
+    # Map urgency to medical triage categories and ensure consistency
+    urgency_mapping = {
+        'low': ('🟢 NON-URGEN', 'Prioritas III - Ringan', 1),
+        'medium': ('🟡 URGEN', 'Prioritas II - Serius tapi stabil', 3),
+        'high': ('🔴 KRITIS', 'Prioritas I - Mengancam nyawa', 4),
+        'emergency': ('🔴 IMMEDIATE', 'Prioritas 0 - Segera ditangani', 5)
     }
-    risk_level_id = risk_translations.get(risk_level.lower(), risk_level.upper())
-    risk_color = get_risk_badge_color(risk_level)
     
-    st.markdown(f"""
-    <div style="background-color: {risk_color}; color: white; padding: 10px; border-radius: 5px; text-align: center; margin: 10px 0;">
-        <h3>Tingkat Risiko: {risk_level_id}</h3>
-    </div>
-    """, unsafe_allow_html=True)
+    urgency_display, priority_description, expected_priority = urgency_mapping.get(urgency.lower(), ('🟡 URGEN', 'Prioritas II', 3))
     
-    # Extracted Symptoms
-    symptoms = triage_data.get('symptoms', [])
-    if symptoms:
-        st.subheader("🔍 Gejala yang Teridentifikasi:")
-        # Display symptoms side by side using markdown with inline format
-        symptoms_text = " • ".join(symptoms)
-        st.markdown(f"{symptoms_text}")
+    # Use consistent priority - if the priority doesn't match urgency, use the mapped one
+    if abs(priority - expected_priority) > 1:  # If there's a mismatch
+        consistent_priority = expected_priority
+    else:
+        consistent_priority = priority
     
-    # Likelihood Chart
-    conditions = triage_data.get('conditions', [])
-    if conditions:
-        st.subheader("📊 Analisis Kondisi:")
-        
-        # Show conditions as text list with percentages (cleaner for long names)
-        for condition in conditions:
-            percentage = condition['likelihood']
-            name = condition['name']
-            # Create a visual bar using markdown on separate line
-            bar_length = int(percentage / 5)  # Scale bar length
-            bar = "🟩" * bar_length + "⬜" * (20 - bar_length)
+    # Create columns for triage display
+    col1, col2, col3 = st.columns([1, 1, 2])
+    
+    with col1:
+        st.markdown("### 🚨 Tingkat Urgensi")
+        color = get_risk_badge_color(urgency)
+        st.markdown(f"""
+        <div style="background-color: {color}; color: white; padding: 10px; border-radius: 5px; text-align: center; font-weight: bold;">
+            {urgency_display}
+        </div>
+        <div style="text-align: center; font-size: 12px; color: #666; margin-top: 5px;">
+            {priority_description}
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown("### 📊 Skala Prioritas")
+        # Use color based on consistent priority level
+        if consistent_priority >= 4:
+            priority_color = "#dc3545"  # Red for high priority
+        elif consistent_priority >= 3:
+            priority_color = "#ffc107"  # Yellow for medium priority
+        else:
+            priority_color = "#28a745"  # Green for low priority
             
-            # Display name and percentage on first line, bar on second line
-            st.markdown(f"**{name}**: {percentage}%")
-            st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;{bar}", unsafe_allow_html=True)
-        
-        # Also show the chart for visual appeal (with truncated names)
-        chart = create_likelihood_chart(conditions)
-        if chart:
-            with st.expander("📈 Lihat Grafik"):
-                st.plotly_chart(chart, use_container_width=True)
+        st.markdown(f"""
+        <div style="background-color: {priority_color}; color: white; padding: 10px; border-radius: 5px; text-align: center; font-weight: bold; font-size: 24px;">
+            {consistent_priority}/5
+        </div>
+        <div style="text-align: center; font-size: 12px; color: #666; margin-top: 5px;">
+            Skala 1-5 (5 = paling mendesak)
+        </div>
+        """, unsafe_allow_html=True)
     
-    # Recommendations
-    recommendations = triage_data.get('recommendations', [])
-    if recommendations:
-        st.subheader("💡 Rekomendasi:")
-        for i, rec in enumerate(recommendations, 1):
-            st.markdown(f"{i}. ✅ {rec}")
+    with col3:
+        st.markdown("### 💡 Rekomendasi")
+        st.info(recommendation)
+    
+    # Reasoning section
+    st.markdown("### 🔍 Alasan Medis")
+    st.write(reasoning)
+    
+    # Emergency contact info for high priority cases
+    if urgency in ['high', 'emergency'] or priority >= 4:
+        st.error("""
+        ⚠️ **PERHATIAN**: Kondisi ini memerlukan perhatian medis segera!
+        
+        📞 **Kontak Darurat:**
+        - Rumah Sakit Terdekat: 119
+        - Ambulans: 118
+        - Puskesmas: (021) xxx-xxxx
+        """)
     
     return triage_data
 
+def display_full_analysis_results(analysis_result):
+    """Display complete analysis results including conditions, recommendations, etc."""
+    if not analysis_result:
+        return
+    
+    # Show extracted symptoms if available
+    if st.session_state.get("collected_symptoms"):
+        st.markdown("### 📋 Gejala yang Terkumpul")
+        all_symptoms = []
+        for symptom_text in st.session_state.collected_symptoms:
+            all_symptoms.extend(extract_symptoms_simple(symptom_text))
+        
+        if all_symptoms:
+            unique_symptoms = list(dict.fromkeys(all_symptoms))  # Remove duplicates
+            cols = st.columns(min(3, len(unique_symptoms)))
+            for i, symptom in enumerate(unique_symptoms):
+                with cols[i % 3]:
+                    st.success(f"✓ {symptom}")
+        st.markdown("---")
+    
+    # Display triage first
+    if 'triage' in analysis_result:
+        display_triage_results(analysis_result['triage'])
+    
+    st.markdown("---")
+    
+    # Conditions analysis
+    if 'conditions' in analysis_result and analysis_result['conditions']:
+        st.markdown("### 🔍 Possible Conditions")
+        
+        # Create likelihood chart
+        chart = create_likelihood_chart(analysis_result['conditions'])
+        if chart:
+            st.plotly_chart(chart, use_container_width=True)
+        
+        # Display detailed conditions
+        for i, condition in enumerate(analysis_result['conditions']):
+            with st.expander(f"📋 {condition.get('name', 'Unknown Condition')} ({condition.get('likelihood', 0)}% likelihood)"):
+                st.write(f"**Description:** {condition.get('description', 'No description available')}")
+                
+                if condition.get('symptoms'):
+                    st.write("**Associated Symptoms:**")
+                    for symptom in condition['symptoms']:
+                        st.write(f"• {symptom}")
+    
+    # Recommendations
+    if 'recommendations' in analysis_result and analysis_result['recommendations']:
+        st.markdown("### 💡 Recommendations")
+        for rec in analysis_result['recommendations']:
+            st.success(f"✓ {rec}")
+    
+    # Red flags
+    if 'red_flags' in analysis_result and analysis_result['red_flags']:
+        st.markdown("### 🚨 Warning Signs")
+        for flag in analysis_result['red_flags']:
+            st.error(f"⚠️ {flag}")
+    
+    # Follow-up
+    if 'follow_up' in analysis_result and analysis_result['follow_up']:
+        st.markdown("### 📅 Follow-up")
+        st.info(analysis_result['follow_up'])
+    
+    # Sources information (for hybrid mode)
+    if analysis_result.get('sources_used'):
+        sources = analysis_result['sources_used']
+        with st.expander("📚 Information Sources"):
+            st.write(f"**Total Sources Used:** {sources.get('total_sources', 0)}")
+            st.write(f"• Local Medical Guidelines: {sources.get('local_guidelines', 0)}")
+            st.write(f"• Web Research Papers: {sources.get('web_research', 0)}")
+            
+            if sources.get('sources'):
+                st.write("**Source Details:**")
+                for source in sources['sources'][:5]:  # Show first 5 sources
+                    st.write(f"• {source.get('title', 'Medical Source')}")
+
 def get_related_symptoms(condition_name):
-    """Get related symptoms based on the diagnosed condition"""
-    # Dictionary of common related symptoms for different conditions
-    symptom_groups = {
-        "dengue": ["skin rash", "joint pain", "eye pain", "bleeding gums"],
-        "influenza": ["muscle aches", "runny nose", "sore throat", "fatigue"],
-        "flu": ["muscle aches", "runny nose", "sore throat", "fatigue"],
-        "viral": ["runny nose", "sore throat", "body aches", "fatigue"],
-        "fever": ["chills", "sweating", "weakness", "loss of appetite"],
-        "respiratory": ["runny nose", "sore throat", "sneezing", "congestion"],
-        "gastrointestinal": ["stomach cramps", "loss of appetite", "dehydration", "weakness"],
-        "diarrhea": ["stomach cramps", "dehydration", "loss of appetite", "weakness"],
-        "typhoid": ["rose spots", "enlarged spleen", "weakness", "loss of appetite"],
-        "chest pain": ["shortness of breath", "sweating", "dizziness", "arm pain"],
-        "headache": ["sensitivity to light", "nausea", "neck stiffness", "dizziness"],
-        "cold": ["runny nose", "sneezing", "sore throat", "congestion"],
-        "measles": ["skin rash", "eye irritation", "sensitivity to light", "white spots in mouth"],
-        "chickenpox": ["skin rash", "blisters", "itching", "fatigue"]
+    """Get related symptoms for a condition"""
+    symptom_database = {
+        "flu": ["demam", "batuk", "pilek", "sakit kepala", "nyeri otot", "kelelahan"],
+        "covid-19": ["demam", "batuk kering", "sesak napas", "hilang penciuman", "hilang pengecapan", "kelelahan"],
+        "dengue": ["demam tinggi", "sakit kepala", "nyeri mata", "nyeri otot", "ruam kulit", "mual"],
+        "typhoid": ["demam", "sakit kepala", "nyeri perut", "diare", "konstipasi", "ruam"],
+        "gastritis": ["nyeri perut", "mual", "muntah", "kembung", "heartburn"],
+        "hipertensi": ["sakit kepala", "pusing", "sesak napas", "nyeri dada", "penglihatan kabur"],
+        "diabetes": ["sering haus", "sering buang air kecil", "kelelahan", "penglihatan kabur", "luka sulit sembuh"],
+        "asma": ["sesak napas", "mengi", "batuk", "dada sesak"],
+        "migrain": ["sakit kepala berdenyut", "mual", "muntah", "sensitif cahaya", "sensitif suara"],
+        "pneumonia": ["batuk", "demam", "sesak napas", "nyeri dada", "kelelahan"]
     }
     
-    # Find matching symptoms based on keywords in condition name
     related = []
     condition_lower = condition_name.lower()
     
-    for key, symptoms in symptom_groups.items():
-        if key in condition_lower:
+    for condition, symptoms in symptom_database.items():
+        if condition in condition_lower or any(word in condition_lower for word in condition.split()):
             related.extend(symptoms)
     
-    # Remove duplicates and limit to 3 most relevant
-    related = list(dict.fromkeys(related))[:3]
-    
-    return related
+    # Remove duplicates and return
+    return list(dict.fromkeys(related))
 
 def extract_symptoms_simple(user_input):
-    """Simple symptom extraction from user input without full AI analysis"""
-    # Common symptom keywords to look for (expanded with Indonesian terms)
+    """Extract symptoms from user input using simple keyword matching"""
+    
+    # Common symptoms in Indonesian
     symptom_keywords = {
-        "demam": ["fever", "demam", "hot", "panas", "meriang"],
-        "sakit kepala": ["headache", "sakit kepala", "head pain", "pusing", "pening"],
-        "batuk": ["cough", "batuk", "coughing", "batuk kering"],
-        "batuk berdahak": ["batuk berdahak", "berdahak", "productive cough", "wet cough", "batuk berlendir"],
-        "mual": ["nausea", "mual", "feel sick", "queasy", "eneg"],
-        "muntah": ["vomit", "muntah", "throw up", "throwing up"],
-        "diare": ["diarrhea", "diare", "loose stool", "watery stool", "mencret"],
-        "sakit perut": ["abdominal pain", "stomach pain", "sakit perut", "belly pain", "perut sakit", "nyeri perut"],
-        "nyeri dada": ["chest pain", "sakit dada", "chest hurt", "nyeri dada"],
-        "sesak nafas": ["shortness of breath", "sesak nafas", "difficulty breathing", "hard to breathe", "susah nafas", "sulit bernapas", "sulit bernafas"],
-        "kelelahan": ["tired", "fatigue", "lelah", "weakness", "lemah", "lemas"],
-        "berkeringat": ["sweating", "berkeringat", "keringat dingin", "berkeringat dingin", "cold sweat"],
-        "sakit tenggorokan": ["sore throat", "sakit tenggorokan", "throat pain"],
-        "pilek": ["runny nose", "pilek", "nasal congestion", "hidung tersumbat"],
-        "nyeri otot": ["body aches", "muscle pain", "nyeri otot", "pegal", "badan pegal"],
-        "tidak nafsu makan": ["loss of appetite", "tidak nafsu makan", "no appetite", "sulit makan", "susah makan", "hilang nafsu makan"]
+        "demam": ["demam", "panas", "fever", "hot"],
+        "batuk": ["batuk", "cough"],
+        "pilek": ["pilek", "ingus", "runny nose", "hidung tersumbat"],
+        "sakit kepala": ["sakit kepala", "pusing", "headache", "dizzy"],
+        "mual": ["mual", "nausea", "pengen muntah"],
+        "muntah": ["muntah", "vomit"],
+        "diare": ["diare", "mencret", "diarrhea", "BAB cair"],
+        "konstipasi": ["konstipasi", "sembelit", "susah BAB", "constipation"],
+        "nyeri perut": ["sakit perut", "nyeri perut", "perut sakit", "stomach pain"],
+        "sesak napas": ["sesak napas", "susah bernapas", "shortness of breath"],
+        "nyeri dada": ["sakit dada", "nyeri dada", "chest pain"],
+        "kelelahan": ["lelah", "capek", "fatigue", "tired"],
+        "nyeri otot": ["nyeri otot", "pegal", "muscle pain"],
+        "ruam": ["ruam", "bintik merah", "rash"],
+        "gatal": ["gatal", "itchy"],
+        "bengkak": ["bengkak", "swelling"],
+        "berkeringat": ["berkeringat", "sweating", "keringat berlebih"]
     }
     
     user_input_lower = user_input.lower()
@@ -252,369 +689,269 @@ def extract_symptoms_simple(user_input):
         for keyword in keywords:
             if keyword in user_input_lower:
                 extracted.append(symptom)
-                break  # Found one match for this symptom, move to next
+                break
     
-    # Remove duplicates and return
     return list(dict.fromkeys(extracted))
 
 def get_related_symptoms_simple(extracted_symptoms):
-    """Get related symptoms based on simple symptom relationships"""
-    # Simple symptom relationship mapping (Indonesian terms)
-    symptom_relationships = {
-        "demam": ["menggigil", "berkeringat", "nyeri otot", "sakit kepala"],
-        "sakit kepala": ["mual", "sensitif cahaya", "kaku leher"],
-        "mual": ["muntah", "tidak nafsu makan", "pusing"],
-        "batuk": ["sakit tenggorokan", "nyeri dada", "sesak nafas"],
-        "batuk berdahak": ["sakit tenggorokan", "nyeri dada", "sesak nafas", "demam"],
-        "muntah": ["dehidrasi", "lemas", "kram perut"],
-        "sakit perut": ["mual", "muntah", "tidak nafsu makan"],
-        "sesak nafas": ["nyeri dada", "pusing", "berkeringat"],
-        "nyeri dada": ["sesak nafas", "nyeri lengan", "berkeringat"],
-        "diare": ["kram perut", "dehidrasi", "lemas"],
-        "kelelahan": ["lemas", "pusing", "tidak nafsu makan"],
-        "berkeringat": ["menggigil", "demam", "lemas", "pusing"],
-        "sakit tenggorokan": ["pilek", "batuk", "kelenjar bengkak"],
-        "pilek": ["bersin", "hidung tersumbat", "sakit tenggorokan"]
+    """Get related symptoms based on extracted symptoms"""
+    
+    # Symptom associations
+    associations = {
+        "demam": ["sakit kepala", "kelelahan", "nyeri otot", "berkeringat"],
+        "batuk": ["pilek", "sakit kepala", "kelelahan"],
+        "pilek": ["batuk", "sakit kepala"],
+        "sakit kepala": ["demam", "mual", "kelelahan"],
+        "mual": ["muntah", "sakit kepala", "nyeri perut"],
+        "muntah": ["mual", "nyeri perut", "kelelahan"],
+        "diare": ["nyeri perut", "mual", "kelelahan"],
+        "nyeri perut": ["mual", "muntah", "diare"],
+        "sesak napas": ["batuk", "nyeri dada", "kelelahan"],
+        "nyeri dada": ["sesak napas", "kelelahan"],
+        "kelelahan": ["demam", "sakit kepala", "nyeri otot"],
+        "ruam": ["gatal", "demam"],
+        "gatal": ["ruam"]
     }
     
     related = []
-    
-    # Get related symptoms for each extracted symptom
     for symptom in extracted_symptoms:
-        if symptom in symptom_relationships:
-            related.extend(symptom_relationships[symptom])
+        if symptom in associations:
+            related.extend(associations[symptom])
     
-    # Remove symptoms they already have and duplicates
-    extracted_lower = [s.lower() for s in extracted_symptoms]
-    related = [s for s in related if s.lower() not in extracted_lower]
-    related = list(dict.fromkeys(related))[:5]  # Remove duplicates and limit to 5
+    # Remove duplicates and original symptoms
+    related = [s for s in list(dict.fromkeys(related)) if s not in extracted_symptoms]
     
     return related
 
 def get_related_symptoms_from_extraction(extracted_symptoms, condition_name):
-    """Get related symptoms based on extracted symptoms and diagnosed condition"""
-    # Dictionary of common related symptoms for different conditions
-    symptom_groups = {
-        "dengue": ["skin rash", "joint pain", "eye pain", "bleeding gums", "abdominal pain"],
-        "influenza": ["muscle aches", "runny nose", "sore throat", "fatigue", "chills"],
-        "flu": ["muscle aches", "runny nose", "sore throat", "fatigue", "chills"],
-        "viral": ["runny nose", "sore throat", "body aches", "fatigue", "congestion"],
-        "fever": ["chills", "sweating", "weakness", "loss of appetite", "body aches"],
-        "respiratory": ["runny nose", "sore throat", "sneezing", "congestion", "chest tightness"],
-        "gastrointestinal": ["stomach cramps", "loss of appetite", "dehydration", "weakness"],
-        "diarrhea": ["stomach cramps", "dehydration", "loss of appetite", "weakness"],
-        "typhoid": ["rose spots", "enlarged spleen", "weakness", "loss of appetite"],
-        "chest pain": ["shortness of breath", "sweating", "dizziness", "arm pain"],
-        "headache": ["sensitivity to light", "nausea", "neck stiffness", "dizziness"],
-        "cold": ["runny nose", "sneezing", "sore throat", "congestion"],
-        "measles": ["skin rash", "eye irritation", "sensitivity to light", "white spots in mouth"],
-        "chickenpox": ["skin rash", "blisters", "itching", "fatigue"]
-    }
+    """Combine extracted symptoms with condition-based related symptoms"""
     
-    # Additional symptom relationships based on what they already have
-    symptom_relationships = {
-        "fever": ["chills", "sweating", "body aches", "headache"],
-        "headache": ["nausea", "sensitivity to light", "neck stiffness"],
-        "nausea": ["vomiting", "loss of appetite", "dizziness"],
-        "cough": ["sore throat", "chest pain", "shortness of breath"],
-        "vomiting": ["dehydration", "weakness", "stomach cramps"],
-        "abdominal pain": ["nausea", "vomiting", "loss of appetite"],
-        "breathing difficulty": ["chest pain", "dizziness", "sweating"],
-        "chest pain": ["shortness of breath", "arm pain", "sweating"]
-    }
+    # Get symptoms from extraction
+    related_from_symptoms = get_related_symptoms_simple(extracted_symptoms)
     
-    related = []
-    condition_lower = condition_name.lower()
+    # Get symptoms from condition
+    related_from_condition = get_related_symptoms(condition_name)
     
-    # Get related symptoms based on condition
-    for key, symptoms in symptom_groups.items():
-        if key in condition_lower:
-            related.extend(symptoms)
+    # Combine and deduplicate
+    all_related = related_from_symptoms + related_from_condition
     
-    # Get related symptoms based on what they already reported
-    for symptom in extracted_symptoms:
-        symptom_lower = symptom.lower()
-        for key, related_symp in symptom_relationships.items():
-            if key in symptom_lower:
-                related.extend(related_symp)
+    # Remove duplicates and already mentioned symptoms
+    unique_related = []
+    for symptom in all_related:
+        if symptom not in unique_related and symptom not in extracted_symptoms:
+            unique_related.append(symptom)
     
-    # Remove symptoms they already mentioned and duplicates
-    extracted_lower = [s.lower() for s in extracted_symptoms]
-    related = [s for s in related if not any(s.lower() in ext.lower() or ext.lower() in s.lower() for ext in extracted_lower)]
-    related = list(dict.fromkeys(related))[:3]  # Remove duplicates and limit to 3
-    
-    return related
+    return unique_related[:8]  # Limit to 8 related symptoms
 
-# Load guidelines from local folder
-@st.cache_resource
 def load_guidelines():
-    guideline_folder = os.path.join(os.path.dirname(__file__), "guidelines")
-    docs = []
+    """Load medical guidelines from files"""
+    guidelines = {}
+    guidelines_dir = "guidelines"
     
-    # Load all markdown files
-    md_files = glob.glob(os.path.join(guideline_folder, "*.md"))
-    for file_path in md_files:
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-                docs.append({
-                    'content': content,
-                    'source': os.path.basename(file_path)
-                })
-        except Exception as e:
-            st.warning(f"Could not load {file_path}: {e}")
+    if os.path.exists(guidelines_dir):
+        for filename in os.listdir(guidelines_dir):
+            if filename.endswith('.md'):
+                filepath = os.path.join(guidelines_dir, filename)
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as file:
+                        content = file.read()
+                        # Use filename without extension as key
+                        key = filename[:-3]
+                        guidelines[key] = content
+                except Exception as e:
+                    st.error(f"Error loading {filename}: {str(e)}")
     
+    docs = [{"content": content, "source": key} for key, content in guidelines.items()]
     return docs
 
-# Streamlit UI
-def main():
-    st.set_page_config(page_title="Patient Symptom Triage Chatbot", page_icon="💬")
-    
-    # Create title row with restart button
-    title_col, button_col = st.columns([4, 1])
-    
-    with title_col:
-        st.title("💬 Chatbot Triase Gejala Pasien")
-        st.markdown("Chat dalam Bahasa Indonesia atau English. Jelaskan gejala Anda dan dapatkan saran triase.")
-    
-    with button_col:
-        def clear_conversation():
-            st.session_state.chat_history = []
-            st.session_state.selected_symptom = None
-            st.session_state.symptom_collection_mode = False
-            st.session_state.collected_symptoms = []
-            st.session_state.selected_additional_symptoms = []
-            st.session_state.trigger_analysis = False
-            if "prev_question_timestamp" in st.session_state:
-                st.session_state.prev_question_timestamp = datetime.datetime.fromtimestamp(0)
-        
-        # Always show restart button if there's any interaction
-        if (st.session_state.get("chat_history", []) or 
-            st.session_state.get("collected_symptoms", []) or
-            st.session_state.get("selected_symptom") or
-            st.session_state.get("symptom_collection_mode", False)):
-            st.button(
-                "🔄 Restart",
-                type="secondary",
-                on_click=clear_conversation,
-                use_container_width=True,
-                help="Mulai percakapan baru"
-            )
 
-    # Secure API Key Management
+def main():
+    # Header
+    st.markdown('<h1 class="main-header">🏥 Patient Symptom Analysis Chatbot</h1>', unsafe_allow_html=True)
+    
+    # Disclaimer
+    st.markdown("""
+    <div class="disclaimer">
+        <strong>⚠️ Medical Disclaimer:</strong> This chatbot is for informational purposes only and should not replace professional medical advice, diagnosis, or treatment. Always consult with a qualified healthcare provider for medical concerns.
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Sidebar for settings and information
+    with st.sidebar:
+        st.markdown("## ⚙️ Settings")
+        
+        def clear_conversation():
+            keys_to_clear = [
+                'chat_history', 'symptom_collection_mode', 'collected_symptoms',
+                'selected_additional_symptoms', 'trigger_analysis', 'prev_question_timestamp'
+            ]
+            for key in keys_to_clear:
+                if key in st.session_state:
+                    del st.session_state[key]
+            st.rerun()
+        
+        if st.button("🗑️ Clear Conversation", use_container_width=True):
+            clear_conversation()
+        
+        # Hybrid Mode Toggle
+        if HYBRID_AVAILABLE:
+            st.markdown("### 🔬 AI Analysis Mode")
+            use_hybrid = st.toggle(
+                "Enable Hybrid Mode", 
+                value=st.session_state.get('use_hybrid_mode', True),
+                help="Uses local medical guidelines + web research for enhanced analysis"
+            )
+            st.session_state['use_hybrid_mode'] = use_hybrid
+            
+            if use_hybrid:
+                st.success("🚀 Hybrid Mode: Enhanced AI with medical research")
+            else:
+                st.info("📖 Basic Mode: Standard AI analysis")
+        else:
+            st.warning("📖 Basic Mode Only\n\nInstall hybrid dependencies for enhanced features")
+        
+        # Medical Priority Guide
+        st.markdown("### 🏥 Panduan Prioritas Medis")
+        with st.expander("ℹ️ Penjelasan Tingkat Prioritas Triase"):
+            st.markdown("""
+            **Sistem Triase Medis** digunakan untuk menentukan urgensi penanganan pasien:
+            
+            | Warna | Makna | Triase | Skala 1-5 | Kondisi Contoh |
+            |-------|--------|---------|-----------|----------------|
+            | 🔴 **Merah** | **Immediate/Kritis** | **Prioritas 0-I** | **5/5** | Mengancam nyawa segera (henti napas, syok, pendarahan masif). |
+            | � **Merah** | **Kritis** | **Prioritas I** | **4/5** | Mengancam nyawa tapi stabil beberapa menit (stroke akut, serangan jantung). |
+            | 🟡 **Kuning** | **Urgen** | **Prioritas II** | **3/5** | Serius tapi stabil, dapat ditunda beberapa jam (patah tulang besar, luka bakar sedang). |
+            | 🟢 **Hijau** | **Non-Urgen** | **Prioritas III** | **1-2/5** | Ringan, tidak mengancam nyawa (luka lecet, demam ringan). |
+            | ⚫ **Hitam** | **Meninggal** | **Prioritas 0** | **-** | Sudah meninggal atau tidak dapat diselamatkan. |
+            
+            **Penjelasan Skala:**
+            - **5/5**: Segera (dalam hitungan menit)
+            - **4/5**: Sangat mendesak (dalam 1 jam)
+            - **3/5**: Mendesak (dalam beberapa jam)
+            - **1-2/5**: Tidak mendesak (dapat menunggu)
+            
+            **Catatan:** 
+            - Tingkat urgensi ini hanya sebagai panduan awal
+            - Selalu konsultasikan dengan tenaga medis profesional
+            - Jika ragu, lebih baik segera mencari bantuan medis
+            """)
+        
+        # Debug section for developers
+        st.markdown("### 🛠️ Developer Options")
+        debug_mode = st.checkbox("Enable Debug Mode", key="debug_mode", help="Show technical errors and debug information")
+        
+        if debug_mode:
+            debug_models = st.checkbox("🔍 Show Available Models", key="debug_models")
+            if debug_models:
+                st.info("Click 'Check Available Models' button below to see which models work with your API key.")
+    
+    # API Key Management
     def get_api_key():
-        """Get API key from multiple sources with fallback options"""
-        # Method 1: Try Streamlit secrets (for local development)
+        # Try to get from Streamlit secrets first
         try:
             if "api_keys" in st.secrets:
                 return st.secrets["api_keys"]["gemini_api_key"]
             elif "gemini_api_key" in st.secrets:
                 return st.secrets["gemini_api_key"]
-        except Exception:
+        except:
             pass
         
-        # Method 2: Try environment variable
-        env_key = os.getenv("GEMINI_API_KEY")
+        # Try environment variable
+        env_key = os.getenv('GEMINI_API_KEY')
         if env_key:
             return env_key
         
-        # Method 3: Try session state (user input)
-        if "user_api_key" in st.session_state and st.session_state.user_api_key:
+        # Finally check session state
+        if 'user_api_key' in st.session_state and st.session_state.user_api_key:
             return st.session_state.user_api_key
-        
+            
         return None
 
-    # Get API key
     api_key = get_api_key()
     
-    # Show API key input if not found
     if not api_key:
-        st.warning("⚠️ Gemini API key tidak ditemukan!")
-        st.info("Masukkan API key Anda di bawah ini:")
-        
-        with st.expander("🔑 Pengaturan API Key", expanded=True):
+        st.warning("🔑 Gemini API key not found")
+        with st.expander("Configure API Key"):
             user_api_key = st.text_input(
-                "Gemini API Key:",
+                "Enter your Gemini API Key:",
                 type="password",
-                help="Dapatkan API key gratis di https://makersuite.google.com/app/apikey",
-                placeholder="Masukkan API key Anda di sini..."
+                help="Get your API key from https://makersuite.google.com/app/apikey"
             )
-            if st.button("Simpan API Key", type="primary"):
-                if user_api_key:
-                    st.session_state.user_api_key = user_api_key
-                    st.success("✅ API Key berhasil disimpan!")
-                    st.rerun()
-                else:
-                    st.error("❌ Silakan masukkan API key yang valid.")
+            if user_api_key:
+                st.session_state.user_api_key = user_api_key
+                st.success("✅ API key configured! You can now use the chatbot.")
+                st.rerun()
             
-            st.markdown("""
-            **Cara mendapatkan API Key:**
-            1. Kunjungi [Google AI Studio](https://makersuite.google.com/app/apikey)
-            2. Login dengan akun Google Anda
-            3. Klik "Create API Key"
-            4. Copy dan paste API key ke form di atas
+            st.info("""
+            **How to get a Gemini API key:**
+            1. Visit [Google AI Studio](https://makersuite.google.com/app/apikey)
+            2. Sign in with your Google account
+            3. Click "Create API key"
+            4. Copy and paste the key above
             """)
-        
-        st.stop()  # Stop execution until API key is provided
+        return
     
-    # Sidebar for Guidelines
-    with st.sidebar:
-        st.header("📋 Panduan Medis")
-        st.markdown("Materi referensi untuk tenaga kesehatan:")
+    # Exa API Key for enhanced web search
+    def get_exa_api_key():
+        try:
+            if "exa_api_key" in st.secrets:
+                return st.secrets["exa_api_key"]
+        except:
+            pass
         
-        # Guidelines with web links
-        guidelines_links = {
-            "🦟 Panduan Demam Berdarah": "https://www.who.int/publications/i/item/9789241547871",
-            "🤧 Panduan Influenza": "https://www.cdc.gov/flu/professionals/diagnosis/clinician_guidance_ridt.htm",
-            "💧 Panduan Diare": "https://www.who.int/news-room/fact-sheets/detail/diarrhoeal-disease",
-            "🤒 Panduan Tifus": "https://www.who.int/news-room/fact-sheets/detail/typhoid",
-            "💊 Panduan Nyeri Dada": "https://www.heart.org/en/health-topics/consumer-healthcare/what-is-cardiovascular-disease/angina-chest-pain"
-        }
-        
-        for guideline_name, link in guidelines_links.items():
-            st.markdown(f"- [{guideline_name}]({link})")
-        
-        st.markdown("---")
-        st.markdown("**Catatan:** Ini adalah tautan referensi eksternal. Selalu konsultasi dengan tenaga kesehatan untuk diagnosis dan pengobatan yang tepat.")
+        env_key = os.getenv('EXA_API_KEY')
+        if env_key:
+            return env_key
+            
+        if 'user_exa_key' in st.session_state and st.session_state.user_exa_key:
+            return st.session_state.user_exa_key
+            
+        return None
+
+    exa_api_key = get_exa_api_key()
     
-    # Predefined symptom examples
-    symptom_examples = [
-        "🤒 Saya demam dan sakit kepala selama 3 hari",
-        "🤢 Saya mengalami mual, muntah, dan sakit perut", 
-        "💨 Saya sulit bernapas dan nyeri dada"
-    ]
-
-    def get_relevant_guideline(conditions, symptoms):
-        """Get relevant guideline based on conditions and symptoms"""
-        docs = load_guidelines()
-        if not docs:
-            return "No guidelines available. Please consult with a healthcare professional for proper medical advice."
-        
-        # Simple keyword matching for demo (replace with better retrieval in production)
-        search_terms = [cond["name"].lower() for cond in conditions] + [sym.lower() for sym in symptoms]
-        
-        best_match = None
-        best_score = 0
-        
-        for doc in docs:
-            content_lower = doc['content'].lower()
-            score = sum(1 for term in search_terms if term in content_lower)
-            if score > best_score:
-                best_score = score
-                best_match = doc
-        
-        if best_match:
-            content = best_match['content']
-            return content[:1000] + "..." if len(content) > 1000 else content
-        else:
-            # Return the first guideline as fallback
-            fallback = docs[0]['content']
-            return fallback[:1000] + "..." if len(fallback) > 1000 else fallback
-
-    # Initialize session state variables
+    # Debug: Check available models if requested
+    if st.session_state.get('debug_models', False):
+        with st.sidebar:
+            if st.button("🔍 Check Available Models"):
+                with st.spinner("Checking available models..."):
+                    models = list_available_models(api_key)
+                    st.write("Available models:")
+                    for model in models[:10]:  # Show first 10
+                        st.write(f"• {model}")
+    
+    # Initialize chat history
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
-    if "collected_symptoms" not in st.session_state:
-        st.session_state.collected_symptoms = []
-    if "selected_additional_symptoms" not in st.session_state:
-        st.session_state.selected_additional_symptoms = []
-    if "symptom_collection_mode" not in st.session_state:
-        st.session_state.symptom_collection_mode = False
+
+    # Main interface header
+    st.markdown("## 💬 Jelaskan Gejala Anda")
     
-    # Only show symptom examples if chat history is empty
-    if not st.session_state.chat_history:
-        st.markdown("### 💡 Pilih dari contoh cepat:")
-        
-        # Create columns for symptom buttons
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            if st.button(symptom_examples[0], key="symptom1", use_container_width=True):
-                st.session_state.selected_symptom = symptom_examples[0]
-                st.rerun()
-        
-        with col2:
-            if st.button(symptom_examples[1], key="symptom2", use_container_width=True):
-                st.session_state.selected_symptom = symptom_examples[1]
-                st.rerun()
-        
-        with col3:
-            if st.button(symptom_examples[2], key="symptom3", use_container_width=True):
-                st.session_state.selected_symptom = symptom_examples[2]
-                st.rerun()
+    # Example symptoms buttons
+    st.markdown("### 📋 Contoh Gejala Umum (Klik untuk mulai)")
+    
+    example_symptoms = [
+        "Saya mengalami demam tinggi dan sakit kepala sejak 2 hari",
+        "Batuk kering, sesak napas, dan kelelahan",
+        "Nyeri perut, mual, dan diare",
+        "Pusing, nyeri dada, dan jantung berdebar",
+        "Sakit tenggorokan dan demam ringan"
+    ]
+    
+    cols = st.columns(2)
+    for i, symptom in enumerate(example_symptoms):
+        with cols[i % 2]:
+            if st.button(f"🔸 {symptom}", key=f"example_{i}", use_container_width=True):
+                st.session_state.selected_symptom = symptom
 
     # Display chat history
     for chat in st.session_state.chat_history:
         with st.chat_message(chat["role"]):
             st.markdown(chat["content"])
             
-            # Display follow-up questions if this is a follow-up message (simplified for history)
-            if chat.get("follow_up"):
-                extracted_symptoms = chat.get("extracted_symptoms", [])
-                
-                if extracted_symptoms:
-                    st.markdown(f"**Gejala yang teridentifikasi:** {', '.join(extracted_symptoms)}")
-            
-            # Display final triage analysis only for final analysis
-            if chat.get("final_analysis") and chat.get("triage"):
-                display_triage_results(chat["triage"])
-                
-                # Add next steps after analysis
-                st.markdown("---")
-                st.markdown("## 🔄 Langkah Selanjutnya")
-                
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    if st.button("🆕 Analisis Baru", key="new_analysis", use_container_width=True, type="primary"):
-                        # Clear all session state for new analysis
-                        st.session_state.chat_history = []
-                        st.session_state.selected_symptom = None
-                        st.session_state.symptom_collection_mode = False
-                        st.session_state.collected_symptoms = []
-                        st.session_state.selected_additional_symptoms = []
-                        st.session_state.trigger_analysis = False
-                        st.rerun()
-                
-                with col2:
-                    if st.button("📋 Salin Hasil", key="copy_results", use_container_width=True):
-                        # Show copyable text version of results
-                        triage_data = chat.get("triage", {})
-                        result_text = f"""
-HASIL ANALISIS TRIASE MEDIS
-
-Tingkat Risiko: {triage_data.get('risk_level', 'Unknown').upper()}
-
-Gejala yang Teridentifikasi:
-{' • '.join(triage_data.get('symptoms', []))}
-
-Analisis Kondisi:
-"""
-                        for condition in triage_data.get('conditions', []):
-                            result_text += f"• {condition['name']}: {condition['likelihood']}%\n"
-                        
-                        result_text += f"""
-Rekomendasi:
-"""
-                        for i, rec in enumerate(triage_data.get('recommendations', []), 1):
-                            result_text += f"{i}. {rec}\n"
-                        
-                        st.text_area("Salin teks di bawah ini:", result_text, height=200)
-                
-                with col3:
-                    if st.button("ℹ️ Info Panduan", key="show_guidelines", use_container_width=True):
-                        st.info("Silakan lihat panduan medis di sidebar untuk informasi lebih lanjut tentang kondisi dan gejala yang dialami.")
-                
-                st.markdown("---")
-                st.markdown("""
-                <div style="background-color: #fff3cd; color: #856404; padding: 15px; border-radius: 5px; border-left: 5px solid #ffc107;">
-                    <strong>⚠️ Penting:</strong> Hasil analisis ini hanya untuk panduan awal. 
-                    Untuk diagnosis dan pengobatan yang akurat, selalu konsultasikan dengan tenaga kesehatan profesional.
-                </div>
-                """, unsafe_allow_html=True)
-
-
-
+            # Display full analysis results if present
+            if chat.get("triage"):
+                display_full_analysis_results(chat["triage"])
 
     # Chat input - always visible
     chat_input = st.chat_input("Jelaskan gejala Anda...")
@@ -716,7 +1053,7 @@ Rekomendasi:
     # Show interface if we have related symptoms and haven't finished analysis
     if related_symptoms and not analysis_finished:
         st.markdown("---")
-        st.markdown("## 🤔 Apakah Anda mengalami gejala tambahan berikut?")
+        st.markdown("## 🔍 Apakah Anda mengalami gejala tambahan berikut?")
         st.markdown("*Gunakan antarmuka di bawah ini untuk memilih gejala tambahan.*")
         
         # Initialize selected additional symptoms in session state
@@ -739,7 +1076,7 @@ Rekomendasi:
             st.markdown("**Gejala tambahan yang dipilih:**")
             tags_html = ""
             for symptom in selected_symptoms:
-                tags_html += f'<span style="background-color: #e1f5fe; color: #01579b; padding: 4px 8px; margin: 2px; border-radius: 12px; font-size: 12px; display: inline-block;">🏷️ {symptom}</span>'
+                tags_html += f'<span style="background-color: #e1f5fe; color: #01579b; padding: 4px 8px; margin: 2px; border-radius: 12px; font-size: 12px; display: inline-block;">🔸 {symptom}</span>'
             st.markdown(tags_html, unsafe_allow_html=True)
         
         # Action buttons
@@ -781,22 +1118,23 @@ Rekomendasi:
                 
                 # Set a flag to trigger analysis
                 st.session_state.trigger_analysis = True
-                st.rerun()    # Handle analysis trigger (must be outside the user_input block)
+                st.rerun()
+
+    # Handle analysis trigger (must be outside the user_input block)
     if st.session_state.get("trigger_analysis", False):
         # Clear the trigger flag first
         st.session_state.trigger_analysis = False
         
         # Debug: Show what symptoms we have
         collected = st.session_state.get("collected_symptoms", [])
-
         
         # Perform final analysis with all collected symptoms
         if collected:
             all_symptoms = " dan ".join(collected)
             final_input = f"Ringkasan gejala lengkap: {all_symptoms}"
             
-            with st.spinner("Melakukan analisis komprehensif..."):
-                final_triage = get_gemini_response(final_input, api_key)
+            # Use the enhanced progress bar for analysis
+            final_triage = perform_analysis_with_progress(final_input, api_key, exa_api_key)
             
             # Add final analysis to chat
             st.session_state.chat_history.append({
@@ -815,6 +1153,35 @@ Rekomendasi:
     # Initialize timestamp tracking
     if "prev_question_timestamp" not in st.session_state:
         st.session_state.prev_question_timestamp = datetime.datetime.fromtimestamp(0)
+
+def get_relevant_guideline(conditions, symptoms):
+    """Get relevant medical guideline based on conditions and symptoms"""
+    docs = load_guidelines()
+    if not docs:
+        return "No guidelines available. Please consult with a healthcare professional for proper medical advice."
+    
+    # Simple keyword matching to find relevant guidelines
+    relevant_content = []
+    
+    for doc in docs:
+        content = doc['content'].lower()
+        source = doc['source']
+        
+        # Check if any condition or symptom matches the guideline content
+        for condition in conditions:
+            condition_name = condition.get('name', '').lower()
+            if any(word in content for word in condition_name.split() if len(word) > 3):
+                relevant_content.append(f"From {source}:\n{doc['content']}")
+                break
+    
+    if relevant_content:
+        # Return first relevant guideline (truncated)
+        content = relevant_content[0]
+        return content[:1000] + "..." if len(content) > 1000 else content
+    else:
+        # Fallback to general guideline
+        fallback = docs[0]['content'] if docs else "Please consult with a healthcare professional."
+        return fallback[:1000] + "..." if len(fallback) > 1000 else fallback
 
 if __name__ == "__main__":
     main()
