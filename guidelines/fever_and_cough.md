@@ -1,0 +1,2 @@
+# Fever and Cough Guideline
+If a patient has fever and cough for more than 24 hours, monitor for shortness of breath, chest pain, or worsening symptoms. Seek medical attention if any of these occur. For mild symptoms, rest, hydrate, and monitor at home.

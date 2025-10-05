@@ -1,0 +1,2 @@
+# Chest Pain Guideline
+Chest pain can be a sign of a serious condition. If the pain is severe, radiates to the arm/jaw, or is accompanied by shortness of breath, sweating, or nausea, seek emergency care immediately. For mild, brief pain, monitor and consult a doctor if it recurs.
