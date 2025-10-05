@@ -393,8 +393,61 @@ def main():
                 help="Mulai percakapan baru"
             )
 
-    # Hardcoded Gemini API Key (for demo)
-    api_key = "AIzaSyDj9u7jehWuFBZL11hZTONYR297GsDRRJs"
+    # Secure API Key Management
+    def get_api_key():
+        """Get API key from multiple sources with fallback options"""
+        # Method 1: Try Streamlit secrets (for local development)
+        try:
+            if "api_keys" in st.secrets:
+                return st.secrets["api_keys"]["gemini_api_key"]
+            elif "gemini_api_key" in st.secrets:
+                return st.secrets["gemini_api_key"]
+        except Exception:
+            pass
+        
+        # Method 2: Try environment variable
+        env_key = os.getenv("GEMINI_API_KEY")
+        if env_key:
+            return env_key
+        
+        # Method 3: Try session state (user input)
+        if "user_api_key" in st.session_state and st.session_state.user_api_key:
+            return st.session_state.user_api_key
+        
+        return None
+
+    # Get API key
+    api_key = get_api_key()
+    
+    # Show API key input if not found
+    if not api_key:
+        st.warning("⚠️ Gemini API key tidak ditemukan!")
+        st.info("Masukkan API key Anda di bawah ini:")
+        
+        with st.expander("🔑 Pengaturan API Key", expanded=True):
+            user_api_key = st.text_input(
+                "Gemini API Key:",
+                type="password",
+                help="Dapatkan API key gratis di https://makersuite.google.com/app/apikey",
+                placeholder="Masukkan API key Anda di sini..."
+            )
+            if st.button("Simpan API Key", type="primary"):
+                if user_api_key:
+                    st.session_state.user_api_key = user_api_key
+                    st.success("✅ API Key berhasil disimpan!")
+                    st.rerun()
+                else:
+                    st.error("❌ Silakan masukkan API key yang valid.")
+            
+            st.markdown("""
+            **Cara mendapatkan API Key:**
+            1. Kunjungi [Google AI Studio](https://makersuite.google.com/app/apikey)
+            2. Login dengan akun Google Anda
+            3. Klik "Create API Key"
+            4. Copy dan paste API key ke form di atas
+            """)
+        
+        st.stop()  # Stop execution until API key is provided
     
     # Sidebar for Guidelines
     with st.sidebar:
