@@ -836,6 +836,63 @@ def main():
             - Jika ragu, lebih baik segera mencari bantuan medis
             """)
         
+        # Technology Stack
+        st.markdown("### 🔧 Technology Stack")
+        with st.expander("⚡ Technologies Used in This Chatbot"):
+            if HYBRID_AVAILABLE:
+                st.markdown("""
+                **🚀 Hybrid AI System:**
+                - **Core AI:** Google Gemini (gemini-1.5-flash-001 / gemini-pro-001)
+                - **RAG System:** LangChain for local medical guidelines processing
+                - **Embeddings:** Google Generative AI Embeddings + HuggingFace fallback
+                - **Vector Store:** FAISS for fast similarity search
+                - **Web Research:** Exa API for real-time medical research
+                - **Document Processing:** RecursiveCharacterTextSplitter
+                
+                **📚 Data Sources:**
+                - Local medical guidelines (COVID-19, Dengue, Typhoid, etc.)
+                - Real-time web research for latest medical information
+                - WHO and medical authority guidelines
+                
+                **🛠️ Framework & Infrastructure:**
+                - **Frontend:** Streamlit with custom CSS styling
+                - **Backend:** Python with async processing
+                - **Deployment:** Streamlit Cloud
+                - **Version Control:** Git & GitHub
+                """)
+            else:
+                st.markdown("""
+                **📖 Basic AI System:**
+                - **Core AI:** Google Gemini (gemini-1.5-flash-001 / gemini-pro-001)
+                - **Data Sources:** Built-in medical knowledge base
+                - **Framework:** Streamlit with custom CSS styling
+                - **Deployment:** Streamlit Cloud
+                - **Version Control:** Git & GitHub
+                
+                **💡 Upgrade to Hybrid Mode for:**
+                - Local medical guideline processing
+                - Real-time web research capabilities
+                - Enhanced accuracy with RAG system
+                """)
+            
+            st.markdown("""
+            **🎨 User Experience:**
+            - Progress bars with animated spinners
+            - Color-coded medical priority system
+            - Responsive design with medical theme
+            - Professional medical triage guidance
+            
+            **🔒 Security & Privacy:**
+            - API key encryption in Streamlit secrets
+            - No personal data storage
+            - Secure HTTPS communication
+            
+            **👨‍💻 Developer:**
+            - **Created by:** [Enzi Muzakki](https://www.linkedin.com/in/enzimuzakki/)
+            - **LinkedIn:** [linkedin.com/in/enzimuzakki](https://www.linkedin.com/in/enzimuzakki/)
+            - **GitHub Repository:** [patient-symptom-chatbot](https://github.com/enzeeeh/patient-symptom-chatbot)
+            """)
+        
         # Debug section for developers
         st.markdown("### 🛠️ Developer Options")
         debug_mode = st.checkbox("Enable Debug Mode", key="debug_mode", help="Show technical errors and debug information")
