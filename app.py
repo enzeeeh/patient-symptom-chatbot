@@ -663,10 +663,11 @@ def extract_symptoms_simple(user_input):
     
     # Common symptoms in Indonesian
     symptom_keywords = {
-        "demam": ["demam", "panas", "fever", "hot"],
-        "batuk": ["batuk", "cough"],
+        "demam": ["demam", "panas", "fever", "hot", "demam ringan", "demam tinggi"],
+        "batuk": ["batuk", "cough", "batuk kering", "batuk berdahak"],
         "pilek": ["pilek", "ingus", "runny nose", "hidung tersumbat"],
         "sakit kepala": ["sakit kepala", "pusing", "headache", "dizzy"],
+        "sakit tenggorokan": ["sakit tenggorokan", "tenggorokan sakit", "sore throat", "radang tenggorokan", "tenggorokan perih"],
         "mual": ["mual", "nausea", "pengen muntah"],
         "muntah": ["muntah", "vomit"],
         "diare": ["diare", "mencret", "diarrhea", "BAB cair"],
@@ -679,7 +680,10 @@ def extract_symptoms_simple(user_input):
         "ruam": ["ruam", "bintik merah", "rash"],
         "gatal": ["gatal", "itchy"],
         "bengkak": ["bengkak", "swelling"],
-        "berkeringat": ["berkeringat", "sweating", "keringat berlebih"]
+        "berkeringat": ["berkeringat", "sweating", "keringat berlebih"],
+        "hilang nafsu makan": ["tidak nafsu makan", "hilang nafsu makan", "tidak mau makan", "loss of appetite"],
+        "nyeri sendi": ["nyeri sendi", "sakit sendi", "joint pain"],
+        "menggigil": ["menggigil", "kedinginan", "chills", "shivering"]
     }
     
     user_input_lower = user_input.lower()
@@ -698,10 +702,11 @@ def get_related_symptoms_simple(extracted_symptoms):
     
     # Symptom associations
     associations = {
-        "demam": ["sakit kepala", "kelelahan", "nyeri otot", "berkeringat"],
-        "batuk": ["pilek", "sakit kepala", "kelelahan"],
-        "pilek": ["batuk", "sakit kepala"],
+        "demam": ["sakit kepala", "kelelahan", "nyeri otot", "berkeringat", "menggigil", "hilang nafsu makan"],
+        "batuk": ["pilek", "sakit kepala", "kelelahan", "sakit tenggorokan"],
+        "pilek": ["batuk", "sakit kepala", "sakit tenggorokan"],
         "sakit kepala": ["demam", "mual", "kelelahan"],
+        "sakit tenggorokan": ["demam", "batuk", "pilek", "sakit kepala", "kelelahan"],
         "mual": ["muntah", "sakit kepala", "nyeri perut"],
         "muntah": ["mual", "nyeri perut", "kelelahan"],
         "diare": ["nyeri perut", "mual", "kelelahan"],
@@ -710,7 +715,10 @@ def get_related_symptoms_simple(extracted_symptoms):
         "nyeri dada": ["sesak napas", "kelelahan"],
         "kelelahan": ["demam", "sakit kepala", "nyeri otot"],
         "ruam": ["gatal", "demam"],
-        "gatal": ["ruam"]
+        "gatal": ["ruam"],
+        "nyeri otot": ["demam", "kelelahan", "nyeri sendi"],
+        "nyeri sendi": ["nyeri otot", "kelelahan", "demam"],
+        "menggigil": ["demam", "kelelahan"]
     }
     
     related = []
@@ -1048,66 +1056,93 @@ def main():
     # Check if analysis is finished
     analysis_finished = any(chat.get("final_analysis", False) for chat in st.session_state.get("chat_history", []))
     
-    # Show interface if we have related symptoms and haven't finished analysis
-    if related_symptoms and not analysis_finished:
+    # Show interface if we're in symptom collection mode and haven't finished analysis
+    if st.session_state.get("symptom_collection_mode", False) and not analysis_finished:
         st.markdown("---")
-        st.markdown("## 🔍 Apakah Anda mengalami gejala tambahan berikut?")
-        st.markdown("*Gunakan antarmuka di bawah ini untuk memilih gejala tambahan.*")
         
-        # Initialize selected additional symptoms in session state
-        if "selected_additional_symptoms" not in st.session_state:
-            st.session_state.selected_additional_symptoms = []
+        # Show collected symptoms summary
+        collected = st.session_state.get("collected_symptoms", [])
+        if collected:
+            st.markdown("### � Gejala yang telah dikumpulkan:")
+            for i, symptom in enumerate(collected, 1):
+                st.markdown(f"**{i}.** {symptom}")
         
-        # Create multiselect for additional symptoms
-        selected_symptoms = st.multiselect(
-            "Pilih gejala tambahan yang Anda alami:",
-            options=related_symptoms,
-            default=st.session_state.selected_additional_symptoms,
-            key=f"current_additional_symptoms_{len(st.session_state.get('chat_history', []))}_{hash(str(related_symptoms))}"
-        )
-        
-        # Update session state
-        st.session_state.selected_additional_symptoms = selected_symptoms
-        
-        # Show selected symptoms as tags
-        if selected_symptoms:
-            st.markdown("**Gejala tambahan yang dipilih:**")
-            tags_html = ""
-            for symptom in selected_symptoms:
-                tags_html += f'<span style="background-color: #e1f5fe; color: #01579b; padding: 4px 8px; margin: 2px; border-radius: 12px; font-size: 12px; display: inline-block;">🔸 {symptom}</span>'
-            st.markdown(tags_html, unsafe_allow_html=True)
+        # Show additional symptom selection if we have related symptoms
+        if related_symptoms:
+            st.markdown("## �🔍 Apakah Anda mengalami gejala tambahan berikut?")
+            st.markdown("*Gunakan antarmuka di bawah ini untuk memilih gejala tambahan.*")
+            
+            # Initialize selected additional symptoms in session state
+            if "selected_additional_symptoms" not in st.session_state:
+                st.session_state.selected_additional_symptoms = []
+            
+            # Create multiselect for additional symptoms
+            selected_symptoms = st.multiselect(
+                "Pilih gejala tambahan yang Anda alami:",
+                options=related_symptoms,
+                default=st.session_state.selected_additional_symptoms,
+                key=f"current_additional_symptoms_{len(st.session_state.get('chat_history', []))}_{hash(str(related_symptoms))}"
+            )
+            
+            # Update session state
+            st.session_state.selected_additional_symptoms = selected_symptoms
+            
+            # Show selected symptoms as tags
+            if selected_symptoms:
+                st.markdown("**Gejala tambahan yang dipilih:**")
+                tags_html = ""
+                for symptom in selected_symptoms:
+                    tags_html += f'<span style="background-color: #e1f5fe; color: #01579b; padding: 4px 8px; margin: 2px; border-radius: 12px; font-size: 12px; display: inline-block;">🔸 {symptom}</span>'
+                st.markdown(tags_html, unsafe_allow_html=True)
+        else:
+            st.markdown("## 💬 Anda dapat menambahkan gejala lain melalui chat atau lanjut analisis")
         
         # Action buttons
         st.markdown("---")
-        col1, col2 = st.columns(2)
         
-        with col1:
-            if st.button("➕ Tambah gejala terpilih", key=f"current_add_selected_{len(st.session_state.get('chat_history', []))}", use_container_width=True):
-                if st.session_state.selected_additional_symptoms:
-                    # Add selected symptoms to collected symptoms
-                    additional_symptoms_text = f"Saya juga mengalami: {', '.join(st.session_state.selected_additional_symptoms)}"
-                    st.session_state.collected_symptoms.append(additional_symptoms_text)
+        if related_symptoms:
+            # Show both buttons when we have related symptoms
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if st.button("➕ Tambah gejala terpilih", key=f"current_add_selected_{len(st.session_state.get('chat_history', []))}", use_container_width=True):
+                    if st.session_state.selected_additional_symptoms:
+                        # Add selected symptoms to collected symptoms
+                        additional_symptoms_text = f"Saya juga mengalami: {', '.join(st.session_state.selected_additional_symptoms)}"
+                        st.session_state.collected_symptoms.append(additional_symptoms_text)
+                        
+                        # Add to chat history
+                        st.session_state.chat_history.append({"role": "user", "content": additional_symptoms_text})
+                        
+                        # Clear selected symptoms for next round
+                        st.session_state.selected_additional_symptoms = []
+                        
+                        # Continue with more symptom collection
+                        st.session_state.selected_symptom = "continue_symptom_collection"
+                        st.rerun()
+                    else:
+                        st.warning("Silakan pilih setidaknya satu gejala terlebih dahulu.")
+            
+            with col2:
+                if st.button("✅ Selesai, analisis sekarang", key=f"current_done_{len(st.session_state.get('chat_history', []))}", type="primary", use_container_width=True):
+                    # Add any remaining selected symptoms before analysis
+                    if st.session_state.get("selected_additional_symptoms", []):
+                        additional_symptoms_text = f"Saya juga mengalami: {', '.join(st.session_state.selected_additional_symptoms)}"
+                        st.session_state.collected_symptoms.append(additional_symptoms_text)
+                        st.session_state.chat_history.append({"role": "user", "content": additional_symptoms_text})
                     
-                    # Add to chat history
-                    st.session_state.chat_history.append({"role": "user", "content": additional_symptoms_text})
+                    # Ensure we have collected symptoms
+                    collected = st.session_state.get("collected_symptoms", [])
+                    if not collected:
+                        st.error("Tidak ada gejala yang terkumpul. Silakan coba lagi.")
+                        return
                     
-                    # Clear selected symptoms for next round
-                    st.session_state.selected_additional_symptoms = []
-                    
-                    # Continue with more symptom collection
-                    st.session_state.selected_symptom = "continue_symptom_collection"
+                    # Set a flag to trigger analysis
+                    st.session_state.trigger_analysis = True
                     st.rerun()
-                else:
-                    st.warning("Silakan pilih setidaknya satu gejala terlebih dahulu.")
-        
-        with col2:
-            if st.button("✅ Selesai, analisis sekarang", key=f"current_done_{len(st.session_state.get('chat_history', []))}", type="primary", use_container_width=True):
-                # Add any remaining selected symptoms before analysis
-                if st.session_state.get("selected_additional_symptoms", []):
-                    additional_symptoms_text = f"Saya juga mengalami: {', '.join(st.session_state.selected_additional_symptoms)}"
-                    st.session_state.collected_symptoms.append(additional_symptoms_text)
-                    st.session_state.chat_history.append({"role": "user", "content": additional_symptoms_text})
-                
+        else:
+            # Show only the analysis button when no related symptoms
+            if st.button("✅ Selesai, analisis sekarang", key=f"current_done_no_related_{len(st.session_state.get('chat_history', []))}", type="primary", use_container_width=True):
                 # Ensure we have collected symptoms
                 collected = st.session_state.get("collected_symptoms", [])
                 if not collected:
