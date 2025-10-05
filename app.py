@@ -886,12 +886,15 @@ def main():
             - API key encryption in Streamlit secrets
             - No personal data storage
             - Secure HTTPS communication
-            
-            **👨‍💻 Developer:**
-            - **Created by:** [Enzi Muzakki](https://www.linkedin.com/in/enzimuzakki/)
-            - **LinkedIn:** [linkedin.com/in/enzimuzakki](https://www.linkedin.com/in/enzimuzakki/)
-            - **GitHub Repository:** [patient-symptom-chatbot](https://github.com/enzeeeh/patient-symptom-chatbot)
             """)
+        
+        # Developer Information
+        st.markdown("### 👨‍💻 Developer")
+        st.markdown("""
+        **Created by:** [Enzi Muzakki](https://www.linkedin.com/in/enzimuzakki/)  
+        **LinkedIn:** [linkedin.com/in/enzimuzakki](https://www.linkedin.com/in/enzimuzakki/)  
+        **GitHub:** [patient-symptom-chatbot](https://github.com/enzeeeh/patient-symptom-chatbot)
+        """)
         
         # Debug section for developers
         st.markdown("### 🛠️ Developer Options")
